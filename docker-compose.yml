@@ -2,16 +2,12 @@ version: '3.8'
 
 services:
   revolut-app:
-    image: python:3.10
+    build: .
     container_name: sentinel_v3_fixed
     ports:
       - "8501:8501"
     restart: always
-    volumes:
-      - ./:/app
-    working_dir: /app
     environment:
       - TELEGRAM_TOKEN=your_telegram_token_here
       - TELEGRAM_CHAT_ID=your_telegram_chat_id_here
       - PYTHONUNBUFFERED=1
-    command: /bin/sh -c "pip install --no-cache-dir -r requirements.txt && streamlit run app.py --server.port=8501 --server.address=0.0.0.0"
