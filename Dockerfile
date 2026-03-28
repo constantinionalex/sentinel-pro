@@ -8,7 +8,7 @@ WORKDIR /app
 COPY . /app
 
 # Instalăm dependențele
-RUN pip install --no-cache-dir streamlit yfinance pandas requests streamlit-autorefresh
+RUN pip install --no-cache-dir streamlit yfinance pandas requests streamlit-autorefresh redis
 
 # Expunem portul Streamlit
 EXPOSE 8501
