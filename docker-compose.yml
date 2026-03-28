@@ -1,4 +1,5 @@
 version: '3.8'
+
 services:
   revolut-app:
     build: .
@@ -10,3 +11,14 @@ services:
       - TELEGRAM_TOKEN=your_telegram_token_here
       - TELEGRAM_CHAT_ID=your_telegram_chat_id_here
       - PYTHONUNBUFFERED=1
+      - REDIS_HOST=redis  # numele serviciului Redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7
+    container_name: sentinel_redis
+    ports:
+      - "6379:6379"
+    restart: always
