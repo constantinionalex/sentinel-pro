@@ -3,7 +3,13 @@ import redis
 import pandas as pd
 import ast
 
-r = redis.Redis(host="redis", port=6379, decode_responses=True)
+import os
+import redis
+
+redis_host = os.getenv("REDIS_HOST", "localhost")
+redis_port = int(os.getenv("REDIS_PORT", 6379))
+
+r = redis.Redis(host=redis_host, port=redis_port)
 
 st.set_page_config(layout="wide")
 st.title("Sentinel PRO")
