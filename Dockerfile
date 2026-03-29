@@ -1,19 +1,21 @@
+# Dockerfile
 FROM python:3.10-slim
 
 WORKDIR /app
 
+# Copiem tot repo-ul
 COPY . /app
 
-RUN pip install --no-cache-dir -r requirements.txt \
+# Instalăm dependințele
+RUN pip install --no-cache-dir \
     streamlit \
     pandas \
-    numpy \
-    yfinance \
-    redis \
     requests \
-    aiohttp \
+    redis \
     streamlit-autorefresh
 
+# Expunem portul Streamlit
 EXPOSE 8501
 
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Comanda de start
+CMD ["streamlit", "run", "scanner.py", "--server.port=8501", "--server.address=0.0.0.0"]
