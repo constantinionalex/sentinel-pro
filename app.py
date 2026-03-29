@@ -1,12 +1,13 @@
 import os
 import time
+import threading
 from datetime import datetime
-
 import pandas as pd
 import requests
 import redis
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
 st.set_page_config(layout="wide", page_title="Sentinel Pro")
 st_autorefresh(interval=20000, key="refresh")
@@ -21,9 +22,8 @@ def send_tg(msg):
                 f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={msg}",
                 timeout=5
             )
-            print(f"📨 Telegram sent: {msg[:50]}...")
-    except Exception as e:
-        print("⚠️ Telegram failed:", e)
+    except:
+        pass
 
 def log_alert(symbol, type_):
     f, day = "alert_log.csv", datetime.now().strftime("%Y-%m-%d")
@@ -35,63 +35,67 @@ def log_alert(symbol, type_):
         return True
     return False
 
-REDIS_HOST = os.getenv("REDIS_HOST", "redis")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+REDIS_HOST = os.getenv("REDIS_HOST","localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT",6379))
 r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
-# 🔔 PROCESS TELEGRAM QUEUE
-def process_telegram_queue():
-    while True:
-        msg = r.rpop("telegram_queue")
-        if msg:
-            send_tg(msg)
-        else:
-            break
-
-process_telegram_queue()
-
-# --- PORTOFOLIU ---
 if not os.path.exists("p.csv"):
-    pd.DataFrame(columns=['Simbol','Pret_A','Pret_C','Varf_24h']).to_csv("p.csv", index=False)
+    df_p = pd.DataFrame([{"Simbol":"AAPL","Pret_A":140,"Pret_C":150,"Varf_24h":155},{"Simbol":"MSFT","Pret_A":310,"Pret_C":300,"Varf_24h":315}])
+    df_p.to_csv("p.csv", index=False)
+
+if not os.path.exists("analysis.csv"):
+    df_a = pd.DataFrame([{"Simbol":"AAPL","Pret":150,"Vol_Relativ":"1.2x","Diff_24h":"+2%","Burst":"NU","Ora":"10:00"},
+                         {"Simbol":"MSFT","Pret":300,"Vol_Relativ":"0.8x","Diff_24h":"-1%","Burst":"NU","Ora":"10:00"}])
+    df_a.to_csv("analysis.csv", index=False)
+
+@st.cache_data
+def list_nasdaq():
+    return ["AAPL","MSFT","NVDA","TSLA","AMZN","GOOGL","META","AVGO","COST","PEP","ADBE","CSCO","TMUS","CMCSA","INTC","AMD","QCOM"]
+
+def run_portfolio():
+    pf = "p.csv"
+    while True:
+        df = pd.read_csv(pf)
+        for i,rw in df.iterrows():
+            try:
+                t = pd.read_json(f"https://api.twelvedata.com/price?symbol={rw['Simbol']}&apikey={os.getenv('TD_API_KEY')}")
+                c_p = float(t["price"])
+                v_24 = c_p*1.05
+                if c_p < rw['Pret_A']*0.95 and log_alert(rw['Simbol'], "DROP_A"):
+                    send_tg(f"⚠️ {rw['Simbol']} sub -5% achizitie: {round(c_p,2)}$")
+                if c_p < v_24*0.85 and log_alert(rw['Simbol'], "DROP_V"):
+                    send_tg(f"⚠️ {rw['Simbol']} sub -15% varf: {round(c_p,2)}$")
+                df.at[i,'Pret_C'] = round(c_p,2)
+                df.at[i,'Varf_24h'] = round(v_24,2)
+            except: pass
+        df.to_csv(pf,index=False)
+        time.sleep(300)
+
+if 'init' not in st.session_state:
+    t1 = threading.Thread(target=run_portfolio, daemon=True)
+    add_script_run_ctx(t1)
+    t1.start()
+    st.session_state['init'] = True
 
 st.title("🛡️ Sentinel Market Tracker")
-
-tab1, tab2 = st.tabs(["💼 Portofoliu", "🤖 AutoTrader"])
-
-# --- PORTOFOLIU ---
+tab1,tab2,tab3 = st.tabs(["💼 Portofoliu","🎯 Screening Burst","📊 Analiza Detaliată"])
 with tab1:
     df_p = pd.read_csv("p.csv")
     with st.form("add"):
-        c1, c2 = st.columns(2)
-        s_in = c1.text_input("Simbol:")
+        c1,c2 = st.columns(2)
+        s_in = c1.selectbox("Simbol:",list_nasdaq())
         p_in = c2.number_input("Preț Achiziție ($):")
         if st.form_submit_button("Adaugă"):
-            pd.concat([df_p, pd.DataFrame([{
-                'Simbol': s_in,
-                'Pret_A': p_in,
-                'Pret_C': 0,
-                'Varf_24h': 0
-            }])]).to_csv("p.csv", index=False)
+            pd.concat([df_p, pd.DataFrame([{'Simbol':s_in,'Pret_A':p_in,'Pret_C':0,'Varf_24h':0}])]).to_csv("p.csv", index=False)
             st.experimental_rerun()
     st.table(df_p)
     if st.button("Reset Portofoliu"):
         os.remove("p.csv")
         st.experimental_rerun()
-
-# --- AUTOTRADER ---
 with tab2:
-    st.subheader("🔥 Top Oportunități")
-    data = r.hgetall("auto_trades")
-    rows = []
-    for k, v in data.items():
-        try:
-            d = eval(v)
-            d["symbol"] = k
-            rows.append(d)
-        except:
-            continue
-    if rows:
-        df = pd.DataFrame(rows)
-        df = df.sort_values("score", ascending=False)
-        df = df[df['score'] >= 4].head(20)
-        st.dataframe(df, use_container_width=True)
+    if os.path.exists("analysis.csv"):
+        df_a = pd.read_csv("analysis.csv")
+        st.dataframe(df_a[df_a['Burst']=="DA"], use_container_width=True)
+with tab3:
+    if os.path.exists("analysis.csv"):
+        st.dataframe(pd.read_csv("analysis.csv"), use_container_width=True)
