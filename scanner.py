@@ -1,109 +1,167 @@
-import asyncio
-import aiohttp
-import pandas as pd
-import redis
-import time
 import os
+import time
+import threading
+import requests
+import pandas as pd
+from datetime import datetime
+from streamlit_autorefresh import st_autorefresh
+import streamlit as st
+from streamlit.runtime.scriptrunner import add_script_run_ctx
 
-TD_API_KEY = os.getenv("TD_API_KEY")
+# --- CONFIG STREAMLIT ---
+st.set_page_config(layout="wide", page_title="Sentinel Pro")
+st_autorefresh(interval=20000, key="refresh")
 
-r = redis.Redis(host=os.getenv("REDIS_HOST","redis"), port=int(os.getenv("REDIS_PORT",6379)), decode_responses=True)
+# --- TELEGRAM ---
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# --- LISTA SIMBOLURILOR ---
-def get_symbols():
-    if os.path.exists("symbols.txt"):
-        with open("symbols.txt") as f:
-            return [line.strip() for line in f if line.strip()]
-    # fallback: câteva simboluri
-    return ["AAPL","MSFT","NVDA","TSLA","AMZN","GOOGL","META","AMD","INTC"]
-
-# --- FETCH DATA TWELVEDATA ---
-async def fetch_td(session, symbol):
-    url = "https://api.twelvedata.com/time_series"
-    params = {
-        "symbol": symbol,
-        "interval": "5min",
-        "outputsize": 96,
-        "apikey": TD_API_KEY
-    }
+def send_tg(msg):
     try:
-        async with session.get(url, params=params, timeout=10) as resp:
-            data = await resp.json()
-            if data.get("status") == "error":
-                print(f"⚠️ TD error for {symbol}: {data.get('message')}")
-                return None
-            df = pd.DataFrame(data.get("values", []))
-            if df.empty:
-                return None
-            df = df.sort_values("datetime")
-            df["close"] = pd.to_numeric(df["close"], errors="coerce")
-            df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
-            df = df.dropna(subset=["close","volume"])
-            return symbol, df
-    except Exception as e:
-        print(f"⚠️ Fetch TD failed {symbol}: {e}")
-        return None
+        if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
+            requests.get(
+                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={msg}",
+                timeout=5
+            )
+    except:
+        pass
 
-# --- CALCULEAZA SCORUL PENTRU AUTO-TRADER ---
-def compute_score(df):
-    if len(df) < 20:
-        return None
-    p = df["close"].iloc[-1]
-    ema = df["close"].ewm(span=20).mean().iloc[-1]
-    vol = df["volume"].iloc[-1]
-    vavg = df["volume"].rolling(20).mean().iloc[-1]
-    vol_r = vol / vavg if vavg > 0 else 0
-    change = (p / df["close"].iloc[0]) - 1
-
-    score = 0
-    if vol_r > 2.5: score += 2
-    if p > ema: score += 1
-    if 0.04 < change < 0.12: score += 2
-    return {"price": round(p,2), "score": score, "vol": round(vol_r,2), "change": round(change*100,1)}
-
-last_alert = {}
-def should_alert(symbol):
-    now = time.time()
-    if symbol not in last_alert or now - last_alert[symbol] > 3600:  # alert max o data/ora
-        last_alert[symbol] = now
+def log_alert(symbol, type_):
+    f, day = "alert_log.csv", datetime.now().strftime("%Y-%m-%d")
+    if not os.path.exists(f):
+        pd.DataFrame(columns=["date", "symbol", "type"]).to_csv(f, index=False)
+    df = pd.read_csv(f)
+    if df[(df['date'] == day) & (df['symbol'] == symbol) & (df['type'] == type_)].empty:
+        pd.concat([df, pd.DataFrame([{"date": day, "symbol": symbol, "type": type_}])]).to_csv(f, index=False)
         return True
     return False
 
-# --- AUTO-TRADER LOGIC ---
-def auto_trader(symbol, data):
-    if data["score"] >= 4:
-        r.hset("auto_trades", symbol, str(data))
-    if data["score"] >= 5 and should_alert(symbol):
-        msg = f"🚀 AUTO TRADE SIGNAL\n{symbol}\nScore: {data['score']}\nPrice: {data['price']}$\n"
-        r.lpush("telegram_queue", msg)
-        print(f"🔔 Telegram queued for {symbol}")
+# --- REDIS CONNECTION ---
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
-# --- WORKER ASYNC ---
-async def worker(symbols):
-    print(f"Scanning batch {len(symbols)}")
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_td(session, s) for s in symbols]
-        results = await asyncio.gather(*tasks)
-        for res in results:
-            if not res: continue
-            symbol, df = res
-            data = compute_score(df)
-            if not data: continue
-            r.hset("market", symbol, str(data))
-            auto_trader(symbol, data)
-            print(f"{symbol} -> score {data['score']}")
+# --- CREARE CSV-URI INITIALE ---
+if not os.path.exists("p.csv"):
+    df_p = pd.DataFrame([
+        {"Simbol": "AAPL", "Pret_A": 140, "Pret_C": 150, "Varf_24h": 155},
+        {"Simbol": "MSFT", "Pret_A": 310, "Pret_C": 300, "Varf_24h": 315}
+    ])
+    df_p.to_csv("p.csv", index=False)
 
-# --- MAIN LOOP ---
-async def main():
-    print("🚀 Scanner started (TwelveData)")
-    symbols = get_symbols()
-    BATCH = 50
+if not os.path.exists("analysis.csv"):
+    df_a = pd.DataFrame([
+        {"Simbol": "AAPL", "Pret": 150, "Vol_Relativ": "1.2x", "Diff_24h": "+2%", "Burst": "NU", "Ora": "10:00"},
+        {"Simbol": "MSFT", "Pret": 300, "Vol_Relativ": "0.8x", "Diff_24h": "-1%", "Burst": "NU", "Ora": "10:00"}
+    ])
+    df_a.to_csv("analysis.csv", index=False)
+
+# --- LISTA SIMBOLURI ---
+with open("symbols.txt") as f:
+    SYMBOLS = [s.strip() for s in f.readlines() if s.strip()]
+
+TD_API_KEY = os.getenv("TD_API_KEY")
+if not TD_API_KEY:
+    raise Exception("Setează TD_API_KEY în mediul de rulare!")
+
+# --- MOTOR SCANARE TWELVEDATA ---
+def fetch_symbol(symbol):
+    url = f"https://api.twelvedata.com/time_series?symbol={symbol}&interval=5min&outputsize=1&apikey={TD_API_KEY}"
+    try:
+        resp = requests.get(url, timeout=10)
+        data = resp.json()
+        if "values" in data:
+            close = float(data["values"][0]["close"])
+            return close
+    except:
+        return None
+    return None
+
+def run_scanner():
+    f = "analysis.csv"
+    cols = ["Simbol", "Pret", "Vol_Relativ", "Diff_24h", "Burst", "Ora"]
+    if not os.path.exists(f):
+        pd.DataFrame(columns=cols).to_csv(f, index=False)
+
     while True:
-        for i in range(0, len(symbols), BATCH):
-            batch = symbols[i:i+BATCH]
-            await worker(batch)
-            await asyncio.sleep(1)  # stay under free API rate limit
-        await asyncio.sleep(30)
+        for s in SYMBOLS:
+            p_now = fetch_symbol(s)
+            if p_now is None:
+                continue
+            # citim analiza existenta
+            df = pd.read_csv(f)
+            p_avg_24 = df[df['Simbol']==s]['Pret'].mean() if s in df['Simbol'].values else p_now
+            p_diff = (p_now / p_avg_24) - 1
+            burst = p_diff > 0.10  # conditie simplificata pentru "explozie"
 
-if __name__ == "__main__":
-    asyncio.run(main())
+            if burst and log_alert(s, "BURST"):
+                send_tg(f"🚀 BURST: {s} @ {round(p_now,2)}$ (+{round(p_diff*100,1)}%)")
+
+            row = {"Simbol": s, "Pret": round(p_now, 2), "Vol_Relativ": "N/A",
+                   "Diff_24h": f"{round(p_diff*100,1)}%", "Burst": "DA" if burst else "NU",
+                   "Ora": datetime.now().strftime("%H:%M")}
+            df = pd.concat([df[df['Simbol'] != s], pd.DataFrame([row])])
+            df.to_csv(f, index=False)
+            time.sleep(0.2)  # rate-limit 5 request/sec pentru free API
+
+# --- MONITORIZARE PORTOFOLIU (pastreaza codul tau original) ---
+def run_portfolio():
+    pf = "p.csv"
+    if not os.path.exists(pf):
+        pd.DataFrame(columns=['Simbol', 'Pret_A', 'Pret_C', 'Varf_24h']).to_csv(pf, index=False)
+
+    while True:
+        df = pd.read_csv(pf)
+        for i, r in df.iterrows():
+            try:
+                c_p = fetch_symbol(r['Simbol'])
+                if c_p is None:
+                    continue
+                v_24 = max(c_p, r['Varf_24h'])  # simplificat
+                if c_p < r['Pret_A'] * 0.95 and log_alert(r['Simbol'], "DROP_A"):
+                    send_tg(f"⚠️ {r['Simbol']} sub -5% achizitie: {round(c_p,2)}$")
+                if c_p < v_24 * 0.85 and log_alert(r['Simbol'], "DROP_V"):
+                    send_tg(f"⚠️ {r['Simbol']} sub -15% varf: {round(c_p,2)}$")
+                df.at[i, 'Pret_C'] = round(c_p, 2)
+                df.at[i, 'Varf_24h'] = round(v_24, 2)
+            except:
+                pass
+        df.to_csv(pf, index=False)
+        time.sleep(300)
+
+# --- START THREADURI ODATA CU STREAMLIT ---
+if 'init' not in st.session_state:
+    t1 = threading.Thread(target=run_scanner, daemon=True)
+    t2 = threading.Thread(target=run_portfolio, daemon=True)
+    add_script_run_ctx(t1)
+    add_script_run_ctx(t2)
+    t1.start()
+    t2.start()
+    st.session_state['init'] = True
+
+# --- INTERFAȚA STREAMLIT ---
+st.title("🛡️ Sentinel Market Tracker")
+tab1, tab2, tab3 = st.tabs(["💼 Portofoliu", "🎯 Screening Burst", "📊 Analiza Detaliată"])
+
+with tab1:
+    df_p = pd.read_csv("p.csv")
+    with st.form("add"):
+        c1, c2 = st.columns(2)
+        s_in = c1.selectbox("Simbol:", SYMBOLS)
+        p_in = c2.number_input("Preț Achiziție ($):")
+        if st.form_submit_button("Adaugă"):
+            pd.concat([df_p, pd.DataFrame([{'Simbol': s_in, 'Pret_A': p_in, 'Pret_C': 0, 'Varf_24h': 0}])]).to_csv("p.csv", index=False)
+            st.experimental_rerun()
+    st.table(df_p)
+    if st.button("Reset Portofoliu"):
+        os.remove("p.csv")
+        st.experimental_rerun()
+
+with tab2:
+    if os.path.exists("analysis.csv"):
+        df_a = pd.read_csv("analysis.csv")
+        st.dataframe(df_a[df_a['Burst'] == "DA"], use_container_width=True)
+
+with tab3:
+    if os.path.exists("analysis.csv"):
+        st.dataframe(pd.read_csv("analysis.csv"), use_container_width=True)
