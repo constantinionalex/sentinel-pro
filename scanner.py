@@ -1,181 +1,110 @@
+import streamlit as st
+import pandas as pd
+import requests
 import os
 import time
-import threading
-from datetime import datetime
-import pandas as pd
-import yfinance as yf
-import requests
-import redis
-import streamlit as st
-from streamlit.runtime.scriptrunner import add_script_run_ctx
 import logging
 
-# --- CONFIG LOGURI ---
+# =====================
+# Configurare logging
+# =====================
 logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
-# --- CONFIG STREAMLIT ---
-st.set_page_config(layout="wide", page_title="Sentinel Pro")
+# =====================
+# Configurări TwelveData
+# =====================
+TD_API_KEY = os.getenv("TD_API_KEY")
+if not TD_API_KEY:
+    TD_API_KEY = "0eef54e01c5b4f6aa18c054d569084de"  # fallback
 
-# --- TELEGRAM ---
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-def send_tg(msg):
+SYMBOLS_FILE = "symbols.txt"  # fișierul cu cele 7000 simboluri
+
+# =====================
+# Funcții helper
+# =====================
+def fetch_price(symbol):
+    """Preia prețul curent de la TwelveData"""
+    url = f"https://api.twelvedata.com/price?symbol={symbol}&apikey={TD_API_KEY}"
     try:
-        if TELEGRAM_TOKEN and TELEGRAM_CHAT_ID:
-            requests.get(
-                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage?chat_id={TELEGRAM_CHAT_ID}&text={msg}",
-                timeout=5
-            )
-    except:
-        pass
+        resp = requests.get(url, timeout=10).json()
+        if "price" in resp:
+            return float(resp["price"])
+        else:
+            logger.warning(f"⚠️ Eroare la {symbol}: {resp.get('message', 'No price')}")
+            return None
+    except Exception as e:
+        logger.warning(f"⚠️ Eroare la {symbol}: {str(e)}")
+        return None
 
-# --- LOG ALERT ---
-def log_alert(symbol, type_):
-    f, day = "alert_log.csv", datetime.now().strftime("%Y-%m-%d")
-    if not os.path.exists(f):
-        pd.DataFrame(columns=["date", "symbol", "type"]).to_csv(f, index=False)
-    df = pd.read_csv(f)
-    if df[(df['date']==day) & (df['symbol']==symbol) & (df['type']==type_)].empty:
-        pd.concat([df, pd.DataFrame([{"date":day,"symbol":symbol,"type":type_}])]).to_csv(f, index=False)
-        return True
-    return False
-
-# --- REDIS CONNECTION ---
-REDIS_HOST = os.getenv("REDIS_HOST","localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT",6379))
-r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-
-# --- CREARE CSV-URI INITIALE ---
-if not os.path.exists("p.csv"):
-    df_p = pd.DataFrame([{"Simbol":"AAPL","Pret_A":140,"Pret_C":150,"Varf_24h":155},
-                         {"Simbol":"MSFT","Pret_A":310,"Pret_C":300,"Varf_24h":315}])
-    df_p.to_csv("p.csv", index=False)
-if not os.path.exists("analysis.csv"):
-    df_a = pd.DataFrame([{"Simbol":"AAPL","Pret":150,"Vol_Relativ":"1.2x","Diff_24h":"+2%","Burst":"NU","Ora":"10:00"},
-                         {"Simbol":"MSFT","Pret":300,"Vol_Relativ":"0.8x","Diff_24h":"-1%","Burst":"NU","Ora":"10:00"}])
-    df_a.to_csv("analysis.csv", index=False)
-
-# --- SYMBOLS DIN FISIER ---
-@st.cache_data
-def get_symbols():
-    if os.path.exists("symbols.txt"):
-        with open("symbols.txt","r") as f:
-            return [line.strip() for line in f.readlines()]
+def load_symbols():
+    if os.path.exists(SYMBOLS_FILE):
+        with open(SYMBOLS_FILE, "r") as f:
+            return [line.strip() for line in f if line.strip()]
     return []
 
-# --- MOTOR SCANARE ---
-def run_scanner():
-    f = "analysis.csv"
-    cols = ["Simbol","Pret","Vol_Relativ","Diff_24h","Burst","Ora"]
-    if not os.path.exists(f):
-        pd.DataFrame(columns=cols).to_csv(f,index=False)
+# =====================
+# Streamlit UI
+# =====================
+st.set_page_config(page_title="Sentinel Scanner", layout="wide")
+st.title("📈 Sentinel Scanner v3 (TwelveData)")
 
-    symbols = get_symbols()
-    logging.info(f"Scaner pornit pentru {len(symbols)} simboluri")
+tab_scaner, tab_portofoliu = st.tabs(["Scaner", "Portofoliu"])
 
-    while True:
-        for s in symbols:
-            try:
-                logging.info(f"🔹 Scanez simbolul: {s}")
-                d_5m = yf.download(s, period="1d", interval="5m", progress=False)
-                d_1h = yf.download(s, period="2d", interval="60m", progress=False)
-                if not d_5m.empty and not d_1h.empty:
-                    p_now = float(d_5m['Close'].iloc[-1])
-                    v_now = float(d_5m['Volume'].iloc[-1])
-                    v_avg = d_5m['Volume'].rolling(50).mean().iloc[-1]
-                    p_avg_24 = d_1h['Close'].tail(24).mean()
+# =====================
+# TAB SCANER
+# =====================
+with tab_scaner:
+    st.subheader("🔹 Scanare simboluri")
+    symbols = load_symbols()
+    scan_limit = st.number_input("Număr simboluri de scanat simultan:", min_value=1, max_value=100, value=20)
+    if st.button("Începe scanarea"):
+        progress_text = st.empty()
+        for i, sym in enumerate(symbols[:scan_limit], 1):
+            price = fetch_price(sym)
+            if price is not None:
+                st.write(f"{i}/{scan_limit} 🔹 {sym} → {price}")
+            else:
+                st.warning(f"{i}/{scan_limit} ⚠️ {sym} - eroare la preluarea prețului")
+            progress_text.text(f"Scanate {i}/{scan_limit} simboluri")
+            time.sleep(0.5)  # pauză ca să nu dăm rate-limit
 
-                    vol_r = v_now / v_avg if v_avg > 0 else 0
-                    p_diff = (p_now / p_avg_24) - 1
-                    burst = vol_r > 2.0 and p_diff > 0.10
+# =====================
+# TAB PORTOFOLIU
+# =====================
+with tab_portofoliu:
+    st.subheader("💼 Portofoliu personal")
+    
+    # Inițializare sesiune
+    if "portfolio" not in st.session_state:
+        st.session_state.portfolio = []
 
-                    if burst and log_alert(s,"BURST"):
-                        msg = f"🚀 BURST: {s} @ {round(p_now,2)}$ (+{round(p_diff*100,1)}%)"
-                        logging.info(msg)
-                        send_tg(msg)
+    # Adăugare simbol
+    add_symbol = st.text_input("Adaugă simbol nou:")
+    if st.button("Adaugă la portofoliu") and add_symbol:
+        if add_symbol not in st.session_state.portfolio:
+            st.session_state.portfolio.append(add_symbol.upper())
+        else:
+            st.warning(f"{add_symbol} există deja în portofoliu!")
 
-                    df = pd.read_csv(f)
-                    row = {"Simbol":s,"Pret":round(p_now,2),"Vol_Relativ":f"{round(vol_r,1)}x",
-                           "Diff_24h":f"{round(p_diff*100,1)}%","Burst":"DA" if burst else "NU",
-                           "Ora":datetime.now().strftime("%H:%M")}
-                    df = pd.concat([df[df['Simbol'] != s], pd.DataFrame([row])])
-                    df.to_csv(f,index=False)
-                time.sleep(0.05)
-            except Exception as e:
-                logging.warning(f"⚠️ Eroare la {s}: {e}")
-        logging.info(f"Runda scanare completă. Timp: {datetime.now().strftime('%H:%M:%S')}")
-        time.sleep(10)
+    # Afișare portofoliu cu opțiune de ștergere individuală
+    if st.session_state.portfolio:
+        st.write("### Simboluri în portofoliu:")
+        for sym in st.session_state.portfolio[:]:
+            col1, col2 = st.columns([4,1])
+            col1.write(sym)
+            if col2.button("❌ Șterge", key=sym):
+                st.session_state.portfolio.remove(sym)
+                st.experimental_rerun()  # actualizează lista după ștergere
+    else:
+        st.info("Portofoliul este gol.")
 
-# --- MONITORIZARE PORTOFOLIU ---
-def run_portfolio():
-    pf = "p.csv"
-    if not os.path.exists(pf):
-        pd.DataFrame(columns=['Simbol','Pret_A','Pret_C','Varf_24h']).to_csv(pf,index=False)
-
-    while True:
-        df = pd.read_csv(pf)
-        for i,rw in df.iterrows():
-            try:
-                t = yf.Ticker(rw['Simbol']).history(period="1d",interval="15m")
-                if not t.empty:
-                    c_p = t['Close'].iloc[-1]
-                    v_24 = t['High'].max()
-
-                    if c_p < rw['Pret_A']*0.95 and log_alert(rw['Simbol'],"DROP_A"):
-                        msg = f"⚠️ {rw['Simbol']} sub -5% achizitie: {round(c_p,2)}$"
-                        logging.info(msg)
-                        send_tg(msg)
-
-                    if c_p < v_24*0.85 and log_alert(rw['Simbol'],"DROP_V"):
-                        msg = f"⚠️ {rw['Simbol']} sub -15% varf: {round(c_p,2)}$"
-                        logging.info(msg)
-                        send_tg(msg)
-
-                    df.at[i,'Pret_C'] = round(c_p,2)
-                    df.at[i,'Varf_24h'] = round(v_24,2)
-            except Exception as e:
-                logging.warning(f"⚠️ Eroare portofoliu {rw['Simbol']}: {e}")
-        df.to_csv(pf,index=False)
-        logging.info(f"Runda portofoliu completă. Timp: {datetime.now().strftime('%H:%M:%S')}")
-        time.sleep(300)
-
-# --- START THREAD-URI ---
-if 'init' not in st.session_state:
-    t1 = threading.Thread(target=run_scanner, daemon=True)
-    t2 = threading.Thread(target=run_portfolio, daemon=True)
-    add_script_run_ctx(t1)
-    add_script_run_ctx(t2)
-    t1.start()
-    t2.start()
-    st.session_state['init'] = True
-
-# --- INTERFAȚA STREAMLIT ---
-st.title("🛡️ Sentinel Market Tracker")
-tab1,tab2,tab3 = st.tabs(["💼 Portofoliu","🎯 Screening Burst","📊 Analiza Detaliată"])
-
-with tab1:
-    df_p = pd.read_csv("p.csv")
-    with st.form("add"):
-        c1,c2 = st.columns(2)
-        s_in = c1.selectbox("Simbol:", get_symbols())
-        p_in = c2.number_input("Preț Achiziție ($):")
-        if st.form_submit_button("Adaugă"):
-            pd.concat([df_p,pd.DataFrame([{'Simbol':s_in,'Pret_A':p_in,'Pret_C':0,'Varf_24h':0}])]).to_csv("p.csv",index=False)
-            st.session_state['rerun_portfolio'] = True  # nou mod rerun
-    st.table(df_p)
-    if st.button("Reset Portofoliu"):
-        os.remove("p.csv")
-        st.experimental_set_query_params(reload=str(time.time()))  # forțare rerun modern Streamlit
-
-with tab2:
-    if os.path.exists("analysis.csv"):
-        df_a = pd.read_csv("analysis.csv")
-        st.dataframe(df_a[df_a['Burst']=="DA"],width='stretch')
-
-with tab3:
-    if os.path.exists("analysis.csv"):
-        st.dataframe(pd.read_csv("analysis.csv"),width='stretch')
+# =====================
+# Log session info
+# =====================
+st.sidebar.subheader("ℹ️ Info")
+st.sidebar.write(f"Simboluri disponibile: {len(symbols)}")
+st.sidebar.write(f"Simboluri în portofoliu: {len(st.session_state.portfolio)}")
