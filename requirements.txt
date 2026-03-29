@@ -1,6 +1,8 @@
 streamlit
-yfinance
 pandas
-requests
-streamlit-autorefresh
+numpy
+yfinance
 redis
+requests
+aiohttp
+streamlit-autorefresh
