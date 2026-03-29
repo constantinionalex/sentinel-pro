@@ -3,7 +3,7 @@ version: '3.8'
 services:
   revolut-app:
     build: .
-    container_name: sentinel_v3_fixed
+    container_name: sentinel_v3_td
     ports:
       - "8501:8501"
     restart: always
@@ -13,17 +13,9 @@ services:
       - PYTHONUNBUFFERED=1
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - TD_API_KEY=0eef54e01c5b4f6aa18c054d569084de
     depends_on:
       - redis
-      - scanner
-
-  scanner:
-    build: .
-    container_name: sentinel_scanner_async
-    command: python scanner.py
-    depends_on:
-      - redis
-    restart: always
 
   redis:
     image: redis:7
