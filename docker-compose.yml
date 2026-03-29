@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  revolut-app:
+  sentinel-app:
     build: .
     container_name: sentinel_v3_td
     ports:
@@ -10,10 +10,10 @@ services:
     environment:
       - TELEGRAM_TOKEN=your_telegram_token_here
       - TELEGRAM_CHAT_ID=your_telegram_chat_id_here
+      - TD_API_KEY=0eef54e01c5b4f6aa18c054d569084de
       - PYTHONUNBUFFERED=1
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - TD_API_KEY=0eef54e01c5b4f6aa18c054d569084de
     depends_on:
       - redis
 
