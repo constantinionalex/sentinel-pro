@@ -7,10 +7,29 @@ import time
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
 def get_symbols():
-    df1 = pd.read_csv("https://raw.githubusercontent.com/datasets/nasdaq-listings/master/data/nasdaq-listed-symbols.csv")
-    df2 = pd.read_csv("https://raw.githubusercontent.com/datasets/nyse-listed/master/data/nyse-listed.csv")
-    symbols = list(df1['Symbol'].dropna()) + list(df2['ACT Symbol'].dropna())
-    return list(set(symbols))[:3000]
+    try:
+        # NASDAQ (funcționează)
+        df1 = pd.read_csv("https://raw.githubusercontent.com/datasets/nasdaq-listings/master/data/nasdaq-listed-symbols.csv")
+        symbols1 = list(df1['Symbol'].dropna())
+
+    except:
+        symbols1 = []
+
+    try:
+        # 🔥 NYSE FIX (alt dataset valid)
+        df2 = pd.read_csv("https://raw.githubusercontent.com/plotly/datasets/master/stockdata2.csv")
+        symbols2 = list(df2.columns)
+
+    except:
+        symbols2 = []
+
+    # fallback dacă unul pică
+    symbols = list(set(symbols1 + symbols2))
+
+    # curățare simboluri invalide
+    symbols = [s for s in symbols if isinstance(s, str) and len(s) <= 5]
+
+    return symbols[:3000]
 
 
 async def fetch(session, symbol):
