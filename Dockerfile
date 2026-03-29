@@ -6,15 +6,10 @@ WORKDIR /app
 # Copiem tot repo-ul
 COPY . /app
 
-# Instalăm dependințele
-RUN pip install --no-cache-dir \
-    streamlit \
-    pandas \
-    requests \
-    redis \
-    streamlit-autorefresh
+# Instalăm toate dependințele
+RUN pip install --no-cache-dir -r requirements.txt redis streamlit streamlit-autorefresh requests pandas
 
-# Expunem portul Streamlit
+# Expunem portul pentru Streamlit
 EXPOSE 8501
 
 # Comanda de start
