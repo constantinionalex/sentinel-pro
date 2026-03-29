@@ -13,7 +13,7 @@ services:
       - PYTHONUNBUFFERED=1
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - TD_API_KEY=your_twelvedata_api_key_here
+      - TD_API_KEY=0eef54e01c5b4f6aa18c054d569084de
     depends_on:
       - redis
 
