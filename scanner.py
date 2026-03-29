@@ -98,9 +98,9 @@ def run_scanner():
                     continue
                 p_now = float(values[0]["close"])
                 v_now = float(values[0]["volume"])
-                # medie simpla pentru volum
-                v_avg = max(v_now,1)  # simplificare
-                p_avg_24 = p_now     # simplificare (poți adăuga media pe 24h dacă ai date)
+                # simplificare volum / 24h
+                v_avg = max(v_now,1)
+                p_avg_24 = p_now
 
                 vol_r = v_now / v_avg if v_avg>0 else 0
                 p_diff = (p_now / p_avg_24) - 1
