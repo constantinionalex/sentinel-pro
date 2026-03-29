@@ -6,16 +6,13 @@ import time
 
 r = redis.Redis(host="redis", port=6379, decode_responses=True)
 
-# --- LISTĂ SIMBOLURI ---
 def get_symbols():
     df1 = pd.read_csv("https://raw.githubusercontent.com/datasets/nasdaq-listings/master/data/nasdaq-listed-symbols.csv")
     df2 = pd.read_csv("https://raw.githubusercontent.com/datasets/nyse-listed/master/data/nyse-listed.csv")
-
     symbols = list(df1['Symbol'].dropna()) + list(df2['ACT Symbol'].dropna())
     return list(set(symbols))[:3000]
 
 
-# --- FETCH ---
 async def fetch(session, symbol):
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?interval=5m&range=1d"
 
@@ -46,7 +43,6 @@ async def fetch(session, symbol):
         return None
 
 
-# --- SCOR ---
 def compute_score(df):
     if len(df) < 30:
         return None
@@ -61,7 +57,6 @@ def compute_score(df):
     change = (p / df['Close'].iloc[-15]) - 1
 
     score = 0
-
     if vol_r > 2.5: score += 2
     if p > ema: score += 1
     if 0.04 < change < 0.12: score += 2
@@ -74,7 +69,6 @@ def compute_score(df):
     }
 
 
-# --- AUTOTRADER LOGIC ---
 last_alert = {}
 
 def should_alert(symbol):
@@ -86,11 +80,9 @@ def should_alert(symbol):
 
 
 def auto_trader(symbol, data):
-    # salvăm top oportunități
     if data["score"] >= 4:
         r.hset("auto_trades", symbol, str(data))
 
-    # ALERTĂ DOAR ELITE
     if data["score"] >= 5 and should_alert(symbol):
         msg = f"""🚀 AUTO TRADE SIGNAL
 {symbol}
@@ -102,7 +94,6 @@ Change: {data['change']}%
         r.lpush("telegram_queue", msg)
 
 
-# --- WORKER ---
 async def worker(symbols):
     async with aiohttp.ClientSession() as session:
         tasks = [fetch(session, s) for s in symbols]
@@ -122,10 +113,8 @@ async def worker(symbols):
             auto_trader(symbol, data)
 
 
-# --- LOOP ---
 async def main():
     symbols = get_symbols()
-
     BATCH = 100
 
     while True:
